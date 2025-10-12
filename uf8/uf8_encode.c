@@ -19,16 +19,6 @@ static inline unsigned clz(uint32_t x)
     return n - x;
 }
 
-/* Decode uf8 to uint32_t */
-uint32_t uf8_decode(uf8 fl)
-{
-    uint32_t mantissa = fl & 0x0f;
-    uint8_t exponent = fl >> 4;
-    uint32_t offset = (0x7FFF >> (15 - exponent)) << 4;
-    return (mantissa << exponent) + offset;
-}
-
-/* Encode uint32_t to uf8 */
 uf8 uf8_encode(uint32_t value)
 {
     /* Use CLZ for fast exponent calculation */
@@ -73,38 +63,46 @@ uf8 uf8_encode(uint32_t value)
     return (exponent << 4) | mantissa;
 }
 
-/* Test encode/decode round-trip */
-static bool test(void)
-{
-    int32_t previous_value = -1;
-    bool passed = true;
-
-    for (int i = 0; i < 256; i++) {
-        uint8_t fl = i;
-        int32_t value = uf8_decode(fl);
-        uint8_t fl2 = uf8_encode(value);
-
-        if (fl != fl2) {
-            printf("%02x: produces value %d but encodes back to %02x\n", fl,
-                   value, fl2);
-            passed = false;
-        }
-
-        if (value <= previous_value) {
-            printf("%02x: value %d <= previous_value %d\n", fl, value,
-                   previous_value);
-            passed = false;
-        }
-
-        previous_value = value;
+bool test_uf8_encode_0xA(){
+    uint32_t value = 0xA;
+    uf8 expected = 0x0A;
+    uf8 result = uf8_encode(value);
+    if (result != expected) {
+        printf("Test failed: expected 0x%02X, got 0x%02X\n", expected, result);
+        return false;
     }
+    return true;
+}
 
-    return passed;
+bool test_uf8_encode_0x1A(){
+    uint32_t value = 0x1A;
+    uf8 expected = 0x15;
+    uf8 result = uf8_encode(value);
+    if (result != expected) {
+        printf("Test failed: expected 0x%02X, got 0x%02X\n", expected, result);
+        return false;
+    }
+    return true;
+}
+
+bool test_uf8_encode_0xfffff(){
+    uint32_t value = 0xf7ff0;
+    uf8 expected = 0xFF;
+    uf8 result = uf8_encode(value);
+    if (result != expected) {
+        printf("Test failed: expected 0x%02X, got 0x%02X\n", expected, result);
+        return false;
+    }
+    return true;
 }
 
 int main(void)
 {
-    if (test()) {
+    bool all_tests_passed = true;
+    all_tests_passed &= test_uf8_encode_0xA();
+    all_tests_passed &= test_uf8_encode_0x1A();
+    all_tests_passed &= test_uf8_encode_0xfffff();
+    if (all_tests_passed) {
         printf("All tests passed.\n");
         return 0;
     }

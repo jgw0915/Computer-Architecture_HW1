@@ -1,2 +1,7 @@
 # VS Code settings
 .vscode/
+
+# Compiled output files
+uf8/output/
+bfloat16/output/
+vector/output/
