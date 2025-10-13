@@ -83,155 +83,194 @@ LBB0_10:
         addi    sp, sp, 32
         ret
 
-# ABI: a0=a.bits (u16), a1=b.bits (u16) -> a0=result bits (u16)
 bf16_mul:
-        mv      a6, a0                      # save originals
-        mv      a7, a1
+    addi    sp, sp, -16
+    sw      ra, 12(sp)
+    sw      s0, 8(sp)
+    sw      s1, 4(sp)
+    sw      s2, 0(sp)
 
-        srli    t0, a0, 15                  # sign_a
-        andi    t0, t0, 1
-        srli    t2, a0, 7                   # exp_a
-        andi    t2, t2, 255
-        andi    t4, a0, 127                 # mant_a
+    mv      a2, a0                  # keep originals for fast returns
+    mv      a3, a1
 
-        srli    t1, a1, 15                  # sign_b
-        andi    t1, t1, 1
-        srli    t3, a1, 7                   # exp_b
-        andi    t3, t3, 255
-        andi    t5, a1, 127                 # mant_b
+    # sign_a, sign_b, result_sign
+    srli    t0, a2, 15
+    andi    t0, t0, 1               # t0 = sign_a
+    srli    t1, a3, 15
+    andi    t1, t1, 1               # t1 = sign_b
+    xor     s0, t0, t1              # s0 = result_sign (0/1)
 
-        xor     t0, t0, t1                  # result_sign
+    # exp_a, exp_b
+    slli    t2, a2, 17
+    srli    t2, t2, 24              # t2 = exp_a
+    slli    t3, a3, 17
+    srli    t3, t3, 24              # t3 = exp_b
 
-# ---- handle a is Inf/NaN ----
-        li      t6, 255
-        bne     t2, t6, check_b_inf_nan
-        bnez    t4, return_a_original       # a is NaN -> return a
-        or      t6, t3, t5                  # b == 0 ?
-        beqz    t6, return_nan              # Inf * 0 -> NaN
-        j       return_inf                  # signed Inf
+    # mant_a, mant_b (7-bit stored field)
+    andi    t4, a2, 0x7F            # t4 = mant_a
+    andi    t5, a3, 0x7F            # t5 = mant_b
 
-check_b_inf_nan:
-        li      t6, 255
-        bne     t3, t6, zero_shortcut
-        bnez    t5, return_b_original       # b is NaN -> return b
-        or      t6, t2, t4                  # a == 0 ?
-        beqz    t6, return_nan              # 0 * Inf -> NaN
-        j       return_inf                  # signed Inf
+    # Handle infinities first
+    li      t6, 255
+    beq     t2, t6, L_EXP_A_INF
+    beq     t3, t6, L_EXP_B_INF
 
-# ---- zero shortcut ----
-zero_shortcut:
-        or      t6, t2, t4
-        beqz    t6, return_signed_zero      # a == 0
-        or      t6, t3, t5
-        beqz    t6, return_signed_zero      # b == 0
+    # Fast zero check: if a==0 or b==0 -> signed zero
+    beqz    t2, L_CHECK_A_MANT_ZERO
+L_AFTER_CHECK_A_ZERO:
+    beqz    t3, L_CHECK_B_MANT_ZERO
+L_AFTER_CHECK_B_ZERO:
 
-# ---- normalize denormals ----
-        mv      a2, x0                      # exp_adjust = 0
+    # exp_adjust = 0
+    li      s2, 0
 
-# A side
-        beqz    t2, norm_a_loop_entry
-        ori     t4, t4, 128                 # mant_a |= 0x80
-        j       after_norm_a
-norm_a_loop_entry:
-norm_a_loop:
-        andi    t6, t4, 128
-        bnez    t6, norm_a_done
-        slli    t4, t4, 1
-        addi    a2, a2, -1
-        j       norm_a_loop
-norm_a_done:
-        li      t2, 1
-after_norm_a:
+    # Normalize A (set implicit 1 or left-shift denorm)
+    beqz    t2, L_DENORM_A
+L_NORM_A_DONE:
+    ori     t4, t4, 0x80            # set implicit 1
+    j       L_CHECK_DENORM_B
 
-# B side
-        beqz    t3, norm_b_loop_entry
-        ori     t5, t5, 128                 # mant_b |= 0x80
-        j       after_norm_b
-norm_b_loop_entry:
-norm_b_loop:
-        andi    t6, t5, 128
-        bnez    t6, norm_b_done
-        slli    t5, t5, 1
-        addi    a2, a2, -1
-        j       norm_b_loop
-norm_b_done:
-        li      t3, 1
-after_norm_b:
+L_DENORM_A:
+    beqz    t4, L_RET_ZERO         # safety
+L_DENORM_A_LOOP:
+    andi    t6, t4, 0x80
+    bnez    t6, L_DENORM_A_EXIT
+    slli    t4, t4, 1
+    addi    s2, s2, -1
+    j       L_DENORM_A_LOOP
+L_DENORM_A_EXIT:
+    li      t2, 1
+    j       L_NORM_A_DONE
 
-# ---- mantissa multiply ----
-        mv      a0, t4
-        mv      a1, t5
-        call    mul16x16_u32               # a0 = result_mant (u32)
-        mv      a4, a0
+L_CHECK_A_MANT_ZERO:
+    beqz    t4, L_RET_ZERO
+    j       L_AFTER_CHECK_A_ZERO
 
-# ---- exponent compute ----
-        add     a3, t2, t3
-        add     a3, a3, a2
-        addi    a3, a3, -127               # result_exp
+    # Normalize B
+L_CHECK_DENORM_B:
+    beqz    t3, L_DENORM_B
+L_NORM_B_DONE:
+    ori     t5, t5, 0x80
 
-# ---- normalize product ----
-        srli    a5, a4, 15
-        andi    a5, a5, 1
-        beqz    a5, no_carry
-        srli    a4, a4, 8                  # (result_mant >> 8) & 0x7F
-        andi    a4, a4, 127
-        addi    a3, a3, 1
-        j       after_norm
-no_carry:
-        srli    a4, a4, 7                  # (result_mant >> 7) & 0x7F
-        andi    a4, a4, 127
-after_norm:
+    # result_exp = exp_a + exp_b - 127 + exp_adjust
+    add     s1, t2, t3
+    add     s1, s1, s2
+    addi    s1, s1, -127
 
-# ---- overflow / underflow ----
-        li      a5, 255
-        blt     a3, a5, check_underflow    # if result_exp < 255 -> continue
-        j       return_inf                  # overflow -> Inf
+    # result_mant = mul16x16_u32(mant_a, mant_b)
+    mv      a0, t4
+    mv      a1, t5
+    call    mul16x16_u32
+    mv      t6, a0                   # t6 = product (u32)
 
-check_underflow:
-        blt     x0, a3, pack_and_return    # if result_exp > 0 -> normal
-        li      a5, -6
-        blt     a3, a5, return_signed_zero # if result_exp < -6 -> zero
-        li      a5, 1
-        sub     a5, a5, a3                  # shift = 1 - result_exp
-        srl     a4, a4, a5                  # denorm mant
-        li      a3, 0
+    # Normalize product:
+    # if (product & 0x8000) { mant=(prod>>8)&0x7F; exp++ } else { mant=(prod>>7)&0x7F; }
+    li      t0, 0x8000
+    and     t0, t6, t0
+    beqz    t0, L_SHIFT_7
+    srli    t6, t6, 8
+    andi    t6, t6, 0x7F
+    addi    s1, s1, 1
+    j       L_EXP_CHECK
+L_SHIFT_7:
+    srli    t6, t6, 7
+    andi    t6, t6, 0x7F
 
-# ---- pack result ----
-pack_and_return:
-        slli    a0, t0, 15
-        andi    a5, a3, 255
-        slli    a5, a5, 7
-        or      a0, a0, a5
-        andi    a4, a4, 127
-        or      a0, a0, a4
-        ret
+L_EXP_CHECK:
+    # overflow: result_exp >= 255 -> signed +Inf
+    li      t0, 255
+    bge     s1, t0, L_RET_INF
 
-# ---- small return helpers ----
-return_signed_zero:
-        slli    a0, t0, 15
-        ret
+    # underflow: result_exp <= 0
+    blt     s1, x0, L_UNDERFLOW
+    beq     s1, x0, L_UNDERFLOW
 
-return_inf:
-        slli    a0, t0, 15
-        lui     a5, 8                      # 0x7F80
-        addi    a5, a5, -128
-        or      a0, a0, a5
-        ret
+    # Pack normal: sign<<15 | (exp&0xFF)<<7 | (mant&0x7F)
+    slli    t0, s0, 15
+    slli    t1, s1, 7
+    or      t0, t0, t1
+    or      t0, t0, t6
+    mv      a0, t0
+    j       L_DONE
 
-return_nan:
-        lui     a0, 8                      # 0x7FC0
-        addi    a0, a0, -64
-        ret
+L_DENORM_B:
+    beqz    t5, L_RET_ZERO
+L_DENORM_B_LOOP:
+    andi    t0, t5, 0x80
+    bnez    t0, L_DENORM_B_EXIT
+    slli    t5, t5, 1
+    addi    s2, s2, -1
+    j       L_DENORM_B_LOOP
+L_DENORM_B_EXIT:
+    li      t3, 1
+    j       L_NORM_B_DONE
 
-return_a_original:
-        slli    a0, a6, 16                 # zext16(a)
-        srli    a0, a0, 16
-        ret
+L_CHECK_B_MANT_ZERO:
+    beqz    t5, L_RET_ZERO
+    j       L_AFTER_CHECK_B_ZERO
 
-return_b_original:
-        slli    a0, a7, 16                 # zext16(b)
-        srli    a0, a0, 16
-        ret
+L_UNDERFLOW:
+    # if result_exp < -6 -> signed zero
+    li      t0, -6
+    blt     s1, t0, L_RET_ZERO
+    # mant >>= (1 - result_exp); exp = 0
+    li      t0, 1
+    sub     t0, t0, s1              # shift amount
+    srl     t6, t6, t0
+    slli    t0, s0, 15
+    or      t0, t0, t6
+    mv      a0, t0
+    j       L_DONE
+
+# ===== Special-case handlers =====
+
+L_EXP_A_INF:                         # exp_a == 0xFF
+    bnez    t4, L_RET_A             # NaN payload -> return a
+    beqz    t3, L_A_INF_CHECK_B_MANT
+    j       L_RET_INF               # finite b -> inf
+L_A_INF_CHECK_B_MANT:
+    beqz    t5, L_RET_NAN           # 0 * Inf -> NaN
+    j       L_RET_INF
+
+L_EXP_B_INF:                         # exp_b == 0xFF
+    bnez    t5, L_RET_B             # NaN payload -> return b
+    beqz    t2, L_B_INF_CHECK_A_MANT
+    j       L_RET_INF
+L_B_INF_CHECK_A_MANT:
+    beqz    t4, L_RET_NAN
+    j       L_RET_INF
+
+# ===== Returns =====
+
+L_RET_A:
+    mv      a0, a2
+    j       L_DONE
+
+L_RET_B:
+    mv      a0, a3
+    j       L_DONE
+
+L_RET_INF:
+    slli    t0, s0, 15
+    li      t1, 0x7F80
+    or      a0, t0, t1
+    j       L_DONE
+
+L_RET_NAN:
+    li      a0, 0x7FC0
+    j       L_DONE
+
+L_RET_ZERO:
+    slli    a0, s0, 15
+    j       L_DONE
+
+L_DONE:
+    lw      ra, 12(sp)
+    lw      s0, 8(sp)
+    lw      s1, 4(sp)
+    lw      s2, 0(sp)
+    addi    sp, sp, 16
+    ret
 
 
 # bf16_div
@@ -268,7 +307,7 @@ bf16_div:
 
     # if a == 0 -> signed zero
     or     a3,t2,t4
-    beqz   a3, return_signed_zero
+    beqz   a3, div_return_signed_zero
 
     # Normalize mantissas (add hidden 1 for normals)
     beqz   t2, skip_set_a_hidden
@@ -332,7 +371,7 @@ shift_right_8:
 
     # Underflow (exp <= 0) -> signed zero
     slti   t2,t1,1
-    bnez   t2, return_signed_zero
+    bnez   t2, div_return_signed_zero
 
     # Assemble result
     slli   t1,t1,7           # exp field
@@ -346,9 +385,9 @@ shift_right_8:
 check_b_is_inf_or_nan:         # exp_b == 0xFF
     bnez   t5, return_b        # NaN: return b
     li     a3,255
-    bne    t2,a3, return_signed_zero       # a not Inf => 0 with sign
-    beqz   t4, return_nan                   # a==Inf => NaN
-    j      return_signed_zero               # a is NaN => 0 with sign
+    bne    t2,a3, div_return_signed_zero       # a not Inf => 0 with sign
+    beqz   t4, div_return_nan                   # a==Inf => NaN
+    j      div_return_signed_zero               # a is NaN => 0 with sign
 
 handle_b_zero:                 # b == 0
     or     a3,t2,t4
@@ -376,11 +415,11 @@ return_signed_inf:
     or     a0,a0,a6
     ret
 
-return_signed_zero:
+div_return_signed_zero:
     slli   a0,t6,15
     ret
 
-return_nan:
+div_return_nan:
     li     a0,0x7FC0
     ret
 
