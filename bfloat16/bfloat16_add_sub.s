@@ -411,7 +411,8 @@ bf16_sub:
         sw      s0, 0(sp)
         addi    s0, sp, 8
 
-        xori    a1,a1,0x8000
+        li      a5,0x8000
+        xor    a1,a1,a5
         call    bf16_add
 
         lw      ra, 4(sp)
