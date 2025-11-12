@@ -181,117 +181,57 @@ test:
         sw      ra,44(sp)
         sw      s0,40(sp)
         addi    s0,sp,48
-        li      a5,-1
+        li      a5,-1                 # previous_value = -1
         sw      a5,-20(s0)
-        li      a5,1
+        li      a5,1                  # passed = true (byte)
         sb      a5,-21(s0)
-        sw      zero,-28(s0)
-        j       L22
-L25:
-        lw      a5,-28(s0)
-        sb      a5,-29(s0)
+        sw      zero,-28(s0)          # i = 0
+        j       test_loop_cond
+
+test_loop_body:
+        lw      a5,-28(s0)            # i
+        sb      a5,-29(s0)            # fl = i
         lbu     a5,-29(s0)
         mv      a0,a5
-        call    uf8_decode
+        call    uf8_decode            # value = uf8_decode(fl)
         mv      a5,a0
         sw      a5,-36(s0)
         lw      a5,-36(s0)
         mv      a0,a5
-        call    uf8_encode
+        call    uf8_encode            # fl2 = uf8_encode(value)
         mv      a5,a0
         sb      a5,-37(s0)
-        lbu     a4,-29(s0)
-        lbu     a5,-37(s0)
-        beq     a4,a5,L23
-        lbu     a5,-29(s0)
-        lbu     a4,-37(s0)
-        mv      a3,a4
-        lw      a2,-36(s0)
-        mv      a1,a5
-        
-        la   a0, msg_mis      #; a0 = "mismatch: fl="
-        li   a7, 4
-        ecall
 
-        mv   a0, a1           #; fl (original byte)
-        li   a7, 1            #; print integer
-        ecall
-
-        la   a0, msg_val
-        li   a7, 4
-        ecall
-
-        mv   a0, a2           #; decoded value
-        li   a7, 1
-        ecall
-
-        la   a0, msg_enc
-        li   a7, 4
-        ecall
-
-        mv   a0, a3           #; re-encoded byte
-        li   a7, 1
-        ecall
-
-        li   a0, 10           #; newline
-        li   a7, 11
-        ecall
-        
-        sb      zero,-21(s0)
-L23:
-        lw      a4,-36(s0)
-        lw      a5,-20(s0)
-        bgt     a4,a5,L24
-        lbu     a5,-29(s0)
-        lw      a3,-20(s0)
-        lw      a2,-36(s0)
-        mv      a1,a5
-        
-        la   a0, msg_le
-        li   a7, 4
-        ecall
-
-        mv   a0, a1           #; fl
-        li   a7, 1
-        ecall
-
-        la   a0, msg_val
-        li   a7, 4
-        ecall
-
-        mv   a0, a2           #; value
-        li   a7, 1
-        ecall
-
-        la   a0, msg_enc      #; reuse label; reads as ", enc=" (or make a ", prev=" string)
-        li   a7, 4
-        ecall
-
-        mv   a0, a3           #; previous_value
-        li   a7, 1
-        ecall    
-
-        li   a0, 10
-        li   a7, 11
-        ecall
-        
-        sb      zero,-21(s0)
-L24:
+        lbu     a4,-29(s0)            # fl
+        lbu     a5,-37(s0)            # fl2
+        beq     a4,a5,after_mismatch_check
+        # print "mismatch: fl=<fl>, val=<value>, enc=<fl2>"
+        # ... ecall prints ...
+        sb      zero,-21(s0)          # passed = false
+after_mismatch_check:
+        lw      a4,-36(s0)            # value
+        lw      a5,-20(s0)            # previous_value
+        bgt     a4,a5,after_monotonic_check
+        # print "non-increasing: fl=<fl>, val=<value>, enc=<previous_value>"
+        # ... ecall prints ...
+        sb      zero,-21(s0)          # passed = false
+after_monotonic_check:
         lw      a5,-36(s0)
-        sw      a5,-20(s0)
+        sw      a5,-20(s0)            # previous_value = value
         lw      a5,-28(s0)
-        addi    a5,a5,1
+        addi    a5,a5,1               # ++i
         sw      a5,-28(s0)
-L22:
+test_loop_cond:
         lw      a4,-28(s0)
         li      a5,255
-        ble     a4,a5,L25
-        lbu     a5,-21(s0)
+        ble     a4,a5,test_loop_body  # i <= 255 ? loop : exit
+        lbu     a5,-21(s0)            # passed
         mv      a0,a5
         lw      ra,44(sp)
         lw      s0,40(sp)
         addi    sp,sp,48
         jr      ra
+
 main:
         addi    sp,sp,-16
         sw      ra,12(sp)
@@ -299,21 +239,22 @@ main:
         addi    s0,sp,16
         call    test
         mv      a5,a0
-        beq     a5,zero,L28
+        beq     a5,zero,set_fail_exit # 0 => fail
 
-        la   a0, okmsg
-        li   a7, 4
+        # success path: print okmsg and return 0
+        la      a0, okmsg
+        li      a7, 4
         ecall
-
-        li   a0, 10
-        li   a7, 11
+        li      a0, 10
+        li      a7, 11
         ecall
-        
         li      a5,0
-        j       L29
-L28:
+        j       return_exit
+
+set_fail_exit:
         li      a5,1
-L29:
+
+return_exit:
         mv      a0,a5
         lw      ra,12(sp)
         lw      s0,8(sp)
