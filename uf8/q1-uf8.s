@@ -23,7 +23,7 @@ clz:
         sw      s0,0(sp)          # save s0
         addi    s0,sp,8           # s0 = frame pointer
 
-        add     t0,x0,a0,         # x = arg
+        add     t0,x0,a0           # x = arg
         addi    t1,x0,32          # n = 32
         addi    t2,x0,16          # c = 16
 
